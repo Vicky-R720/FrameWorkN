@@ -9,7 +9,7 @@ set SRC_DIR=src\main\java
 set BUILD_DIR=build\classes
 set LIB_DIR=lib
 set SERVLET_JAR=%LIB_DIR%\servlet-api.jar
-set DEST_FOLDER="../projet-test/lib"
+set DEST_FOLDER="../TestFM/lib"
 
 REM Créer le dossier build s'il n'existe pas
 if exist %BUILD_DIR% rd /s /q %BUILD_DIR%
