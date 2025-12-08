@@ -62,6 +62,9 @@ public class FrontServlet extends HttpServlet {
                 } else if (result == null) {
                     System.out.println(invoker.method.getName() + " -> null");
                 } else if (result instanceof ModelView mv) {
+                    for (var entry : mv.getData().entrySet()) {
+                        req.setAttribute(entry.getKey(), entry.getValue());
+                    }
                     // Redirection vers la JSP
                     req.getRequestDispatcher("/pages/" + mv.getView()).forward(req, resp);
                 } else {
