@@ -16,7 +16,7 @@ import servlet.annotations.Url;
 
 public class FrontServlet extends HttpServlet {
 
-    private Map<String, MethodInvoker> routes = new HashMap<>();
+    private Map<String, Map<servlet.http.HttpMethod, MethodInvoker>> routes = new HashMap<>();
 
     // init est executé une seule fois au lancement de ce servlet
     @Override
@@ -28,11 +28,15 @@ public class FrontServlet extends HttpServlet {
             // 2 Parcourir leurs méthodes pour trouver celles annotées avec @Url
             for (Class<?> c : classes) {
                 for (var m : c.getDeclaredMethods()) {
-                    if (m.isAnnotationPresent(Url.class)) {
-                        Url annotation = m.getAnnotation(Url.class);
-                        String path = annotation.value();
-                        routes.put(path, new MethodInvoker(c, m));
-                        System.out.println("Route enregistrée : " + path + " → " + c.getName() + "." + m.getName());
+
+                    if (m.isAnnotationPresent(servlet.annotations.GetMapping.class)) {
+                        String path = m.getAnnotation(servlet.annotations.GetMapping.class).value();
+                        registerRoute(path, servlet.http.HttpMethod.GET, c, m);
+                    }
+
+                    if (m.isAnnotationPresent(servlet.annotations.PostMapping.class)) {
+                        String path = m.getAnnotation(servlet.annotations.PostMapping.class).value();
+                        registerRoute(path, servlet.http.HttpMethod.POST, c, m);
                     }
                 }
             }
@@ -42,13 +46,42 @@ public class FrontServlet extends HttpServlet {
         }
     }
 
+    private void registerRoute(String path,
+            servlet.http.HttpMethod method,
+            Class<?> controller,
+            java.lang.reflect.Method m) {
+
+        routes.computeIfAbsent(path, k -> new HashMap<>())
+                .put(method, new MethodInvoker(controller, m));
+
+        System.out.println("Mapped [" + method + "] " + path +
+                " -> " + controller.getName() + "." + m.getName());
+    }
+
     // }
     @Override
     protected void service(HttpServletRequest req, HttpServletResponse resp)
             throws ServletException, IOException {
 
         String path = req.getRequestURI().substring(req.getContextPath().length());
-        MethodInvoker invoker = routes.get(path);
+        String httpMethodStr = req.getMethod(); // GET, POST
+        servlet.http.HttpMethod httpMethod = servlet.http.HttpMethod.valueOf(httpMethodStr);
+
+        Map<servlet.http.HttpMethod, MethodInvoker> methods = routes.get(path);
+
+        if (methods == null) {
+            resp.setStatus(HttpServletResponse.SC_NOT_FOUND);
+            resp.getWriter().print("404 - No mapping for " + path);
+            return;
+        }
+
+        MethodInvoker invoker = methods.get(httpMethod);
+
+        if (invoker == null) {
+            resp.setStatus(HttpServletResponse.SC_METHOD_NOT_ALLOWED);
+            resp.getWriter().print("405 - Method " + httpMethod + " not allowed for " + path);
+            return;
+        }
 
         resp.setContentType("text/plain");
 
