@@ -36,7 +36,7 @@ public class FrontServlet extends HttpServlet {
                     }
                 }
             }
-            
+
         } catch (Exception e) {
             throw new ServletException(e);
         }
@@ -56,6 +56,21 @@ public class FrontServlet extends HttpServlet {
             try {
                 Object controller = invoker.controllerClass.getDeclaredConstructor().newInstance();
                 Object result = invoker.method.invoke(controller);
+
+                if (result instanceof String) {
+                    System.out.println(invoker.method.getName() + " -> String : " + result);
+                } else if (result == null) {
+                    System.out.println(invoker.method.getName() + " -> null");
+                } else if (result instanceof ModelView mv) {
+                    for (var entry : mv.getData().entrySet()) {
+                        req.setAttribute(entry.getKey(), entry.getValue());
+                    }
+                    // Redirection vers la JSP
+                    req.getRequestDispatcher("/pages/" + mv.getView()).forward(req, resp);
+                } else {
+                    System.out.println(
+                            invoker.method.getName() + " -> NON-String : " + result.getClass().getSimpleName());
+                }
                 resp.getWriter().print(result);
             } catch (Exception e) {
                 e.printStackTrace(resp.getWriter());
