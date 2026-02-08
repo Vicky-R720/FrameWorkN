@@ -98,43 +98,45 @@ public class FrontServlet extends HttpServlet {
                     java.lang.reflect.Parameter p = parameters[i];
                     Class<?> paramType = p.getType();
 
+                    // Cas des Map (déjà géré)
                     if (Map.class.isAssignableFrom(paramType)) {
-
                         Map<String, Object> map = new HashMap<>();
-
                         Enumeration<String> paramNames = req.getParameterNames();
                         while (paramNames.hasMoreElements()) {
                             String name = paramNames.nextElement();
                             String value = req.getParameter(name);
                             map.put(name, value);
                         }
-
                         args[i] = map;
                         continue;
                     }
 
-                    // 1️⃣ Récupérer le nom du paramètre depuis @RequestParam si présent
-                    String paramName;
+                    // Cas des types simples avec @RequestParam
                     if (p.isAnnotationPresent(servlet.annotations.RequestParam.class)) {
-                        paramName = p.getAnnotation(servlet.annotations.RequestParam.class).value();
-                    } else {
-                        paramName = p.getName(); // fallback (si javac -parameters)
+                        String paramName = p.getAnnotation(servlet.annotations.RequestParam.class).value();
+                        String valueStr = req.getParameter(paramName);
+                        
+                        if (valueStr == null && (paramType == int.class || paramType == Integer.class)) {
+                            args[i] = 0;
+                        } else if (valueStr == null) {
+                            args[i] = null;
+                        } else if (paramType == int.class || paramType == Integer.class) {
+                            args[i] = Integer.parseInt(valueStr);
+                        } else if (paramType == String.class) {
+                            args[i] = valueStr;
+                        } else {
+                            args[i] = null;
+                        }
+                        continue;
                     }
 
-                    // 2️⃣ Récupérer la valeur depuis req.getParameter
-                    String valueStr = req.getParameter(paramName);
-
-                    // 3️⃣ Conversion type
-                    if (valueStr == null && (paramType == int.class || paramType == Integer.class)) {
-                        args[i] = 0;
-                    } else if (valueStr == null) {
+                    // NOUVEAU : Cas des objets complexes (sans annotation @RequestParam)
+                    try {
+                        args[i] = ObjectBinder.bindObject(req, paramType);
+                    } catch (Exception e) {
+                        // En cas d'erreur, on met null
                         args[i] = null;
-                    } else if (paramType == int.class || paramType == Integer.class) {
-                        args[i] = Integer.parseInt(valueStr);
-                    } else if (paramType == String.class) {
-                        args[i] = valueStr;
-                    } else {
-                        args[i] = null;
+                        System.err.println("Erreur lors du binding pour " + paramType.getName() + ": " + e.getMessage());
                     }
                 }
 
