@@ -98,6 +98,21 @@ public class FrontServlet extends HttpServlet {
                     java.lang.reflect.Parameter p = parameters[i];
                     Class<?> paramType = p.getType();
 
+                    if (Map.class.isAssignableFrom(paramType)) {
+
+                        Map<String, Object> map = new HashMap<>();
+
+                        Enumeration<String> paramNames = req.getParameterNames();
+                        while (paramNames.hasMoreElements()) {
+                            String name = paramNames.nextElement();
+                            String value = req.getParameter(name);
+                            map.put(name, value);
+                        }
+
+                        args[i] = map;
+                        continue;
+                    }
+
                     // 1️⃣ Récupérer le nom du paramètre depuis @RequestParam si présent
                     String paramName;
                     if (p.isAnnotationPresent(servlet.annotations.RequestParam.class)) {
