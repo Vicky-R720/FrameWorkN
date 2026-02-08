@@ -55,8 +55,45 @@ public class FrontServlet extends HttpServlet {
         if (invoker != null) {
             try {
                 Object controller = invoker.controllerClass.getDeclaredConstructor().newInstance();
-                Object result = invoker.method.invoke(controller);
 
+                // --- Nouvelle partie : injection des paramètres ---
+                java.lang.reflect.Method method = invoker.method;
+                java.lang.reflect.Parameter[] parameters = method.getParameters();
+                Object[] args = new Object[parameters.length];
+
+                for (int i = 0; i < parameters.length; i++) {
+                    java.lang.reflect.Parameter p = parameters[i];
+                    Class<?> paramType = p.getType();
+
+                    // 1️⃣ Récupérer le nom du paramètre depuis @RequestParam si présent
+                    String paramName;
+                    if (p.isAnnotationPresent(servlet.annotations.RequestParam.class)) {
+                        paramName = p.getAnnotation(servlet.annotations.RequestParam.class).value();
+                    } else {
+                        paramName = p.getName(); // fallback (si javac -parameters)
+                    }
+
+                    // 2️⃣ Récupérer la valeur depuis req.getParameter
+                    String valueStr = req.getParameter(paramName);
+
+                    // 3️⃣ Conversion type
+                    if (valueStr == null && (paramType == int.class || paramType == Integer.class)) {
+                        args[i] = 0;
+                    } else if (valueStr == null) {
+                        args[i] = null;
+                    } else if (paramType == int.class || paramType == Integer.class) {
+                        args[i] = Integer.parseInt(valueStr);
+                    } else if (paramType == String.class) {
+                        args[i] = valueStr;
+                    } else {
+                        args[i] = null;
+                    }
+                }
+
+                // --- Appel de la méthode avec injection ---
+                Object result = method.invoke(controller, args);
+
+                // --- Gestion retour (ton code existant) ---
                 if (result instanceof String) {
                     System.out.println(invoker.method.getName() + " -> String : " + result);
                 } else if (result == null) {
@@ -65,13 +102,13 @@ public class FrontServlet extends HttpServlet {
                     for (var entry : mv.getData().entrySet()) {
                         req.setAttribute(entry.getKey(), entry.getValue());
                     }
-                    // Redirection vers la JSP
                     req.getRequestDispatcher("/pages/" + mv.getView()).forward(req, resp);
                 } else {
                     System.out.println(
                             invoker.method.getName() + " -> NON-String : " + result.getClass().getSimpleName());
                 }
                 resp.getWriter().print(result);
+
             } catch (Exception e) {
                 e.printStackTrace(resp.getWriter());
             }
