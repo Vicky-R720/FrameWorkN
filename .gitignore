@@ -1,0 +1,10 @@
+﻿# Fichiers compilés
+*.class
+*.jar
+build/
+target/
+
+# IDE
+.vscode/
+.idea/
+*.iml
