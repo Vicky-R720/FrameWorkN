@@ -2,18 +2,26 @@ package servlet;
 
 import jakarta.servlet.*;
 import jakarta.servlet.http.*;
+import jakarta.servlet.annotation.MultipartConfig;
 import servlet.annotations.Url;
 
 import java.io.IOException;
 import java.io.File;
+import java.io.InputStream;
+import java.io.FileOutputStream;
 import java.net.URL;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.Paths;
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.Enumeration;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import servlet.annotations.Url;
 
+@MultipartConfig
 public class FrontServlet extends HttpServlet {
 
     private Map<String, Map<servlet.http.HttpMethod, MethodInvoker>> routes = new HashMap<>();
@@ -70,6 +78,16 @@ public class FrontServlet extends HttpServlet {
         Map<servlet.http.HttpMethod, MethodInvoker> methods = routes.get(path);
 
         if (methods == null) {
+            // Si pas de mapping trouvé, vérifier si c'est un fichier statique
+            if (isStaticResource(path)) {
+                // Utiliser le servlet par défaut de Tomcat pour servir les fichiers statiques
+                RequestDispatcher defaultServlet = getServletContext().getNamedDispatcher("default");
+                if (defaultServlet != null) {
+                    defaultServlet.forward(req, resp);
+                    return;
+                }
+            }
+            
             resp.setStatus(HttpServletResponse.SC_NOT_FOUND);
             resp.getWriter().print("404 - No mapping for " + path);
             return;
@@ -98,10 +116,30 @@ public class FrontServlet extends HttpServlet {
                     java.lang.reflect.Parameter p = parameters[i];
                     Class<?> paramType = p.getType();
 
+                    // Gestion de Map<String, List<Upload>> pour les fichiers uploadés
                     if (Map.class.isAssignableFrom(paramType)) {
+                        // Vérifier si c'est un Map<String, List<Upload>>
+                        java.lang.reflect.Type genericType = p.getParameterizedType();
+                        if (genericType instanceof java.lang.reflect.ParameterizedType) {
+                            java.lang.reflect.ParameterizedType pType = (java.lang.reflect.ParameterizedType) genericType;
+                            java.lang.reflect.Type[] typeArgs = pType.getActualTypeArguments();
+                            
+                            // Si le deuxième argument est List<Upload>
+                            if (typeArgs.length == 2 && typeArgs[1] instanceof java.lang.reflect.ParameterizedType) {
+                                java.lang.reflect.ParameterizedType listType = (java.lang.reflect.ParameterizedType) typeArgs[1];
+                                if (listType.getRawType().equals(List.class)) {
+                                    java.lang.reflect.Type listArg = listType.getActualTypeArguments()[0];
+                                    if (listArg.equals(Upload.class)) {
+                                        // C'est un Map<String, List<Upload>> !
+                                        args[i] = processFileUploads(req);
+                                        continue;
+                                    }
+                                }
+                            }
+                        }
 
+                        // Sinon, comportement par défaut : Map<String, Object>
                         Map<String, Object> map = new HashMap<>();
-
                         Enumeration<String> paramNames = req.getParameterNames();
                         while (paramNames.hasMoreElements()) {
                             String name = paramNames.nextElement();
@@ -141,6 +179,23 @@ public class FrontServlet extends HttpServlet {
                 // --- Appel de la méthode avec injection ---
                 Object result = method.invoke(controller, args);
 
+                // --- Gestion de l'annotation @Json ---
+                boolean isJson = method.isAnnotationPresent(servlet.annotations.Json.class);
+                
+                if (isJson) {
+                    resp.setContentType("application/json");
+                    
+                    // Si le résultat est déjà un JsonResponse, le convertir directement
+                    if (result instanceof JsonResponse) {
+                        resp.getWriter().print(((JsonResponse) result).toJson());
+                    } else {
+                        // Sinon, envelopper dans un JsonResponse.success()
+                        JsonResponse jsonResponse = JsonResponse.success(result);
+                        resp.getWriter().print(jsonResponse.toJson());
+                    }
+                    return;
+                }
+
                 // --- Gestion retour (ton code existant) ---
                 if (result instanceof String) {
                     System.out.println(invoker.method.getName() + " -> String : " + result);
@@ -151,6 +206,7 @@ public class FrontServlet extends HttpServlet {
                         req.setAttribute(entry.getKey(), entry.getValue());
                     }
                     req.getRequestDispatcher("/pages/" + mv.getView()).forward(req, resp);
+                    return;
                 } else {
                     System.out.println(
                             invoker.method.getName() + " -> NON-String : " + result.getClass().getSimpleName());
@@ -163,6 +219,92 @@ public class FrontServlet extends HttpServlet {
         } else {
             resp.getWriter().print("404 - Aucun contrôleur trouvé pour " + path);
         }
+    }
+    // ---- Gestion des fichiers uploadés ----
+    private Map<String, List<Upload>> processFileUploads(HttpServletRequest req) throws IOException, ServletException {
+        Map<String, List<Upload>> uploads = new HashMap<>();
+        
+        // Définir le dossier d'upload
+        String uploadDir = getServletContext().getRealPath("/") + File.separator + "upload";
+        File uploadDirectory = new File(uploadDir);
+        if (!uploadDirectory.exists()) {
+            uploadDirectory.mkdirs();
+        }
+
+        // Récupérer toutes les parties de la requête multipart
+        Collection<Part> parts = req.getParts();
+        
+        for (Part part : parts) {
+            String fieldName = part.getName();
+            String filename = getSubmittedFileName(part);
+            
+            // Si c'est un fichier (pas un champ de formulaire simple)
+            if (filename != null && !filename.isEmpty()) {
+                // Lire le contenu du fichier
+                InputStream inputStream = part.getInputStream();
+                byte[] content = inputStream.readAllBytes();
+                inputStream.close();
+                
+                // Créer un nom unique pour éviter les conflits
+                String uniqueFilename = System.currentTimeMillis() + "_" + filename;
+                String savedPath = uploadDir + File.separator + uniqueFilename;
+                
+                // Sauvegarder le fichier
+                try (FileOutputStream outputStream = new FileOutputStream(savedPath)) {
+                    outputStream.write(content);
+                }
+                
+                // Créer l'objet Upload
+                Upload upload = new Upload(filename, part.getContentType(), part.getSize(), content);
+                upload.setSavedPath(savedPath);
+                
+                // Ajouter au map (grouper par nom de champ)
+                uploads.computeIfAbsent(fieldName, k -> new ArrayList<>()).add(upload);
+                
+                System.out.println("Fichier uploadé : " + filename +
+                        " (" + part.getSize() + " bytes) -> " + savedPath);
+            }
+        }
+        
+        return uploads;
+    }
+    
+    // Méthode utilitaire pour extraire le nom du fichier depuis Part
+    private String getSubmittedFileName(Part part) {
+        String contentDisposition = part.getHeader("content-disposition");
+        if (contentDisposition != null) {
+            for (String token : contentDisposition.split(";")) {
+                if (token.trim().startsWith("filename")) {
+                    String filename = token.substring(token.indexOf('=') + 1).trim().replace("\"", "");
+                    return filename;
+                }
+            }
+        }
+        return null;
+    }
+    
+    // Méthode pour vérifier si c'est un fichier statique
+    private boolean isStaticResource(String path) {
+        String lowerPath = path.toLowerCase();
+        return lowerPath.endsWith(".html") || 
+               lowerPath.endsWith(".htm") ||
+               lowerPath.endsWith(".css") || 
+               lowerPath.endsWith(".js") || 
+               lowerPath.endsWith(".jpg") || 
+               lowerPath.endsWith(".jpeg") || 
+               lowerPath.endsWith(".png") || 
+               lowerPath.endsWith(".gif") || 
+               lowerPath.endsWith(".ico") || 
+               lowerPath.endsWith(".svg") || 
+               lowerPath.endsWith(".woff") || 
+               lowerPath.endsWith(".woff2") || 
+               lowerPath.endsWith(".ttf") || 
+               lowerPath.endsWith(".eot") ||
+               lowerPath.endsWith(".jsp") ||
+               lowerPath.startsWith("/images/") ||
+               lowerPath.startsWith("/css/") ||
+               lowerPath.startsWith("/js/") ||
+               lowerPath.startsWith("/pages/");
     }
 
     // ---- Classe utilitaire ----
