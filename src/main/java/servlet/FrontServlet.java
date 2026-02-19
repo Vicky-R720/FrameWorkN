@@ -116,6 +116,30 @@ public class FrontServlet extends HttpServlet {
                     java.lang.reflect.Parameter p = parameters[i];
                     Class<?> paramType = p.getType();
 
+                    // 🆕 Gestion de l'annotation @Session
+                    if (p.isAnnotationPresent(servlet.annotations.Session.class)) {
+                        if (Map.class.isAssignableFrom(paramType)) {
+                            // Injection de Map<String, Object> représentant la session
+                            HttpSession session = req.getSession();
+                            Map<String, Object> sessionMap = new HashMap<>();
+                            
+                            // Copier tous les attributs de session dans la map
+                            Enumeration<String> attributeNames = session.getAttributeNames();
+                            while (attributeNames.hasMoreElements()) {
+                                String name = attributeNames.nextElement();
+                                sessionMap.put(name, session.getAttribute(name));
+                            }
+                            
+                            args[i] = sessionMap;
+                        } else if (paramType == HttpSession.class) {
+                            // Injection directe de HttpSession
+                            args[i] = req.getSession();
+                        } else {
+                            args[i] = null;
+                        }
+                        continue;
+                    }
+
                     // Gestion de Map<String, List<Upload>> pour les fichiers uploadés
                     if (Map.class.isAssignableFrom(paramType)) {
                         // Vérifier si c'est un Map<String, List<Upload>>
