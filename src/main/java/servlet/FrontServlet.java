@@ -2,18 +2,26 @@ package servlet;
 
 import jakarta.servlet.*;
 import jakarta.servlet.http.*;
+import jakarta.servlet.annotation.MultipartConfig;
 import servlet.annotations.Url;
 
 import java.io.IOException;
 import java.io.File;
+import java.io.InputStream;
+import java.io.FileOutputStream;
 import java.net.URL;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.Paths;
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.Enumeration;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import servlet.annotations.Url;
 
+@MultipartConfig
 public class FrontServlet extends HttpServlet {
 
     private Map<String, Map<servlet.http.HttpMethod, MethodInvoker>> routes = new HashMap<>();
@@ -64,23 +72,22 @@ public class FrontServlet extends HttpServlet {
             throws ServletException, IOException {
 
         String path = req.getRequestURI().substring(req.getContextPath().length());
-        
-        // Laisser passer les fichiers statiques (HTML, CSS, JS, images, etc.)
-        if (isStaticResource(path)) {
-            RequestDispatcher defaultServlet = req.getServletContext()
-                .getNamedDispatcher("default");
-            if (defaultServlet != null) {
-                defaultServlet.forward(req, resp);
-                return;
-            }
-        }
-        
         String httpMethodStr = req.getMethod(); // GET, POST
         servlet.http.HttpMethod httpMethod = servlet.http.HttpMethod.valueOf(httpMethodStr);
 
         Map<servlet.http.HttpMethod, MethodInvoker> methods = routes.get(path);
 
         if (methods == null) {
+            // Si pas de mapping trouvé, vérifier si c'est un fichier statique
+            if (isStaticResource(path)) {
+                // Utiliser le servlet par défaut de Tomcat pour servir les fichiers statiques
+                RequestDispatcher defaultServlet = getServletContext().getNamedDispatcher("default");
+                if (defaultServlet != null) {
+                    defaultServlet.forward(req, resp);
+                    return;
+                }
+            }
+            
             resp.setStatus(HttpServletResponse.SC_NOT_FOUND);
             resp.getWriter().print("404 - No mapping for " + path);
             return;
@@ -109,8 +116,29 @@ public class FrontServlet extends HttpServlet {
                     java.lang.reflect.Parameter p = parameters[i];
                     Class<?> paramType = p.getType();
 
-                    // Cas des Map (déjà géré)
+                    // Gestion de Map<String, List<Upload>> pour les fichiers uploadés
                     if (Map.class.isAssignableFrom(paramType)) {
+                        // Vérifier si c'est un Map<String, List<Upload>>
+                        java.lang.reflect.Type genericType = p.getParameterizedType();
+                        if (genericType instanceof java.lang.reflect.ParameterizedType) {
+                            java.lang.reflect.ParameterizedType pType = (java.lang.reflect.ParameterizedType) genericType;
+                            java.lang.reflect.Type[] typeArgs = pType.getActualTypeArguments();
+                            
+                            // Si le deuxième argument est List<Upload>
+                            if (typeArgs.length == 2 && typeArgs[1] instanceof java.lang.reflect.ParameterizedType) {
+                                java.lang.reflect.ParameterizedType listType = (java.lang.reflect.ParameterizedType) typeArgs[1];
+                                if (listType.getRawType().equals(List.class)) {
+                                    java.lang.reflect.Type listArg = listType.getActualTypeArguments()[0];
+                                    if (listArg.equals(Upload.class)) {
+                                        // C'est un Map<String, List<Upload>> !
+                                        args[i] = processFileUploads(req);
+                                        continue;
+                                    }
+                                }
+                            }
+                        }
+
+                        // Sinon, comportement par défaut : Map<String, Object>
                         Map<String, Object> map = new HashMap<>();
                         Enumeration<String> paramNames = req.getParameterNames();
                         while (paramNames.hasMoreElements()) {
@@ -118,64 +146,59 @@ public class FrontServlet extends HttpServlet {
                             String value = req.getParameter(name);
                             map.put(name, value);
                         }
+
                         args[i] = map;
                         continue;
                     }
 
-                    // Cas des types simples avec @RequestParam
+                    // 1️⃣ Récupérer le nom du paramètre depuis @RequestParam si présent
+                    String paramName;
                     if (p.isAnnotationPresent(servlet.annotations.RequestParam.class)) {
-                        String paramName = p.getAnnotation(servlet.annotations.RequestParam.class).value();
-                        String valueStr = req.getParameter(paramName);
-                        
-                        if (valueStr == null && (paramType == int.class || paramType == Integer.class)) {
-                            args[i] = 0;
-                        } else if (valueStr == null) {
-                            args[i] = null;
-                        } else if (paramType == int.class || paramType == Integer.class) {
-                            args[i] = Integer.parseInt(valueStr);
-                        } else if (paramType == String.class) {
-                            args[i] = valueStr;
-                        } else {
-                            args[i] = null;
-                        }
-                        continue;
+                        paramName = p.getAnnotation(servlet.annotations.RequestParam.class).value();
+                    } else {
+                        paramName = p.getName(); // fallback (si javac -parameters)
                     }
 
-                    // NOUVEAU : Cas des objets complexes (sans annotation @RequestParam)
-                    try {
-                        args[i] = ObjectBinder.bindObject(req, paramType);
-                    } catch (Exception e) {
-                        // En cas d'erreur, on met null
+                    // 2️⃣ Récupérer la valeur depuis req.getParameter
+                    String valueStr = req.getParameter(paramName);
+
+                    // 3️⃣ Conversion type
+                    if (valueStr == null && (paramType == int.class || paramType == Integer.class)) {
+                        args[i] = 0;
+                    } else if (valueStr == null) {
                         args[i] = null;
-                        System.err.println("Erreur lors du binding pour " + paramType.getName() + ": " + e.getMessage());
+                    } else if (paramType == int.class || paramType == Integer.class) {
+                        args[i] = Integer.parseInt(valueStr);
+                    } else if (paramType == String.class) {
+                        args[i] = valueStr;
+                    } else {
+                        args[i] = null;
                     }
                 }
 
                 // --- Appel de la méthode avec injection ---
                 Object result = method.invoke(controller, args);
 
-                // --- Gestion retour avec support JSON ---
-                // Vérifier si la méthode est annotée avec @Json
-                if (method.isAnnotationPresent(servlet.annotations.Json.class)) {
-                    // Mode JSON API
+                // --- Gestion de l'annotation @Json ---
+                boolean isJson = method.isAnnotationPresent(servlet.annotations.Json.class);
+                
+                if (isJson) {
                     resp.setContentType("application/json");
-                    resp.setCharacterEncoding("UTF-8");
                     
-                    JsonResponse jsonResponse;
+                    // Si le résultat est déjà un JsonResponse, le convertir directement
                     if (result instanceof JsonResponse) {
-                        // Si la méthode retourne déjà un JsonResponse, l'utiliser tel quel
-                        jsonResponse = (JsonResponse) result;
+                        resp.getWriter().print(((JsonResponse) result).toJson());
                     } else {
-                        // Sinon, envelopper le résultat dans un JsonResponse success
-                        jsonResponse = JsonResponse.success(result);
+                        // Sinon, envelopper dans un JsonResponse.success()
+                        JsonResponse jsonResponse = JsonResponse.success(result);
+                        resp.getWriter().print(jsonResponse.toJson());
                     }
-                    
-                    resp.getWriter().print(jsonResponse.toJson());
-                    System.out.println(invoker.method.getName() + " -> JSON : " + jsonResponse.toJson());
-                    
-                } else if (result instanceof String) {
+                    return;
+                }
+
+                // --- Gestion retour (ton code existant) ---
+                if (result instanceof String) {
                     System.out.println(invoker.method.getName() + " -> String : " + result);
-                    resp.getWriter().print(result);
                 } else if (result == null) {
                     System.out.println(invoker.method.getName() + " -> null");
                 } else if (result instanceof ModelView mv) {
@@ -183,11 +206,12 @@ public class FrontServlet extends HttpServlet {
                         req.setAttribute(entry.getKey(), entry.getValue());
                     }
                     req.getRequestDispatcher("/pages/" + mv.getView()).forward(req, resp);
+                    return;
                 } else {
                     System.out.println(
                             invoker.method.getName() + " -> NON-String : " + result.getClass().getSimpleName());
-                    resp.getWriter().print(result);
                 }
+                resp.getWriter().print(result);
 
             } catch (Exception e) {
                 e.printStackTrace(resp.getWriter());
@@ -196,22 +220,91 @@ public class FrontServlet extends HttpServlet {
             resp.getWriter().print("404 - Aucun contrôleur trouvé pour " + path);
         }
     }
+    // ---- Gestion des fichiers uploadés ----
+    private Map<String, List<Upload>> processFileUploads(HttpServletRequest req) throws IOException, ServletException {
+        Map<String, List<Upload>> uploads = new HashMap<>();
+        
+        // Définir le dossier d'upload
+        String uploadDir = getServletContext().getRealPath("/") + File.separator + "upload";
+        File uploadDirectory = new File(uploadDir);
+        if (!uploadDirectory.exists()) {
+            uploadDirectory.mkdirs();
+        }
 
-    // ---- Vérifier si c'est une ressource statique ----
+        // Récupérer toutes les parties de la requête multipart
+        Collection<Part> parts = req.getParts();
+        
+        for (Part part : parts) {
+            String fieldName = part.getName();
+            String filename = getSubmittedFileName(part);
+            
+            // Si c'est un fichier (pas un champ de formulaire simple)
+            if (filename != null && !filename.isEmpty()) {
+                // Lire le contenu du fichier
+                InputStream inputStream = part.getInputStream();
+                byte[] content = inputStream.readAllBytes();
+                inputStream.close();
+                
+                // Créer un nom unique pour éviter les conflits
+                String uniqueFilename = System.currentTimeMillis() + "_" + filename;
+                String savedPath = uploadDir + File.separator + uniqueFilename;
+                
+                // Sauvegarder le fichier
+                try (FileOutputStream outputStream = new FileOutputStream(savedPath)) {
+                    outputStream.write(content);
+                }
+                
+                // Créer l'objet Upload
+                Upload upload = new Upload(filename, part.getContentType(), part.getSize(), content);
+                upload.setSavedPath(savedPath);
+                
+                // Ajouter au map (grouper par nom de champ)
+                uploads.computeIfAbsent(fieldName, k -> new ArrayList<>()).add(upload);
+                
+                System.out.println("Fichier uploadé : " + filename +
+                        " (" + part.getSize() + " bytes) -> " + savedPath);
+            }
+        }
+        
+        return uploads;
+    }
+    
+    // Méthode utilitaire pour extraire le nom du fichier depuis Part
+    private String getSubmittedFileName(Part part) {
+        String contentDisposition = part.getHeader("content-disposition");
+        if (contentDisposition != null) {
+            for (String token : contentDisposition.split(";")) {
+                if (token.trim().startsWith("filename")) {
+                    String filename = token.substring(token.indexOf('=') + 1).trim().replace("\"", "");
+                    return filename;
+                }
+            }
+        }
+        return null;
+    }
+    
+    // Méthode pour vérifier si c'est un fichier statique
     private boolean isStaticResource(String path) {
         String lowerPath = path.toLowerCase();
         return lowerPath.endsWith(".html") || 
+               lowerPath.endsWith(".htm") ||
                lowerPath.endsWith(".css") || 
                lowerPath.endsWith(".js") || 
                lowerPath.endsWith(".jpg") || 
                lowerPath.endsWith(".jpeg") || 
                lowerPath.endsWith(".png") || 
                lowerPath.endsWith(".gif") || 
+               lowerPath.endsWith(".ico") || 
                lowerPath.endsWith(".svg") || 
-               lowerPath.endsWith(".ico") ||
-               lowerPath.endsWith(".woff") ||
-               lowerPath.endsWith(".woff2") ||
-               lowerPath.endsWith(".ttf");
+               lowerPath.endsWith(".woff") || 
+               lowerPath.endsWith(".woff2") || 
+               lowerPath.endsWith(".ttf") || 
+               lowerPath.endsWith(".eot") ||
+               lowerPath.endsWith(".jsp") ||
+               lowerPath.startsWith("/images/") ||
+               lowerPath.startsWith("/css/") ||
+               lowerPath.startsWith("/js/") ||
+               lowerPath.startsWith("/pages/");
     }
 
     // ---- Classe utilitaire ----

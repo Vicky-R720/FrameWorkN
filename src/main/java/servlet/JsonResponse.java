@@ -1,179 +1,137 @@
 package servlet;
 
-import java.util.HashMap;
-import java.util.List;
+import java.lang.reflect.Array;
+import java.util.Collection;
 import java.util.Map;
 
+/**
+ * Classe pour générer des réponses JSON
+ */
 public class JsonResponse {
-    private String status;
-    private int code;
+    private boolean success;
     private Object data;
-    
-    public JsonResponse() {
-    }
-    
-    public JsonResponse(String status, int code, Object data) {
-        this.status = status;
-        this.code = code;
+    private String error;
+    private int errorCode;
+
+    private JsonResponse(boolean success, Object data, String error, int errorCode) {
+        this.success = success;
         this.data = data;
+        this.error = error;
+        this.errorCode = errorCode;
     }
-    
-    // Méthodes statiques pour créer des réponses
+
     public static JsonResponse success(Object data) {
-        return new JsonResponse("success", 200, data);
+        return new JsonResponse(true, data, null, 0);
     }
-    
+
     public static JsonResponse error(int code, String message) {
-        Map<String, String> errorData = new HashMap<>();
-        errorData.put("message", message);
-        return new JsonResponse("error", code, errorData);
+        return new JsonResponse(false, null, message, code);
     }
-    
-    // Getters et Setters
-    public String getStatus() {
-        return status;
-    }
-    
-    public void setStatus(String status) {
-        this.status = status;
-    }
-    
-    public int getCode() {
-        return code;
-    }
-    
-    public void setCode(int code) {
-        this.code = code;
-    }
-    
-    public Object getData() {
-        return data;
-    }
-    
-    public void setData(Object data) {
-        this.data = data;
-    }
-    
-    // Conversion en JSON simple (sans bibliothèque externe)
+
     public String toJson() {
         StringBuilder json = new StringBuilder();
         json.append("{");
-        json.append("\"status\":\"").append(status).append("\",");
-        json.append("\"code\":").append(code).append(",");
-        json.append("\"data\":");
+        json.append("\"success\":").append(success).append(",");
         
-        if (data == null) {
-            json.append("null");
-        } else if (data instanceof String) {
-            json.append("\"").append(escapeJson(data.toString())).append("\"");
-        } else if (data instanceof Number || data instanceof Boolean) {
-            json.append(data);
-        } else if (data instanceof List) {
-            json.append(convertListToJson((List<?>) data));
-        } else if (data instanceof Map) {
-            json.append(convertMapToJson((Map<?, ?>) data));
+        if (success) {
+            json.append("\"data\":");
+            json.append(objectToJson(data));
         } else {
-            // Pour les objets complexes, on utilise la réflexion
-            json.append(convertObjectToJson(data));
+            json.append("\"error\":\"").append(escapeJson(error)).append("\",");
+            json.append("\"errorCode\":").append(errorCode);
         }
         
         json.append("}");
         return json.toString();
     }
-    
-    private String convertListToJson(List<?> list) {
-        StringBuilder json = new StringBuilder("[");
-        boolean first = true;
-        for (Object item : list) {
-            if (!first) json.append(",");
-            first = false;
-            
-            if (item == null) {
-                json.append("null");
-            } else if (item instanceof String) {
-                json.append("\"").append(escapeJson(item.toString())).append("\"");
-            } else if (item instanceof Number || item instanceof Boolean) {
-                json.append(item);
-            } else if (item instanceof Map) {
-                json.append(convertMapToJson((Map<?, ?>) item));
-            } else if (item instanceof List) {
-                json.append(convertListToJson((List<?>) item));
-            } else {
-                json.append(convertObjectToJson(item));
-            }
+
+    private String objectToJson(Object obj) {
+        if (obj == null) {
+            return "null";
         }
-        json.append("]");
-        return json.toString();
+        
+        if (obj instanceof String) {
+            return "\"" + escapeJson(obj.toString()) + "\"";
+        }
+        
+        if (obj instanceof Number || obj instanceof Boolean) {
+            return obj.toString();
+        }
+        
+        if (obj instanceof Map) {
+            return mapToJson((Map<?, ?>) obj);
+        }
+        
+        if (obj instanceof Collection) {
+            return collectionToJson((Collection<?>) obj);
+        }
+        
+        if (obj.getClass().isArray()) {
+            return arrayToJson(obj);
+        }
+        
+        // Objet personnalisé
+        return pojoToJson(obj);
     }
-    
-    private String convertMapToJson(Map<?, ?> map) {
+
+    private String mapToJson(Map<?, ?> map) {
         StringBuilder json = new StringBuilder("{");
         boolean first = true;
         for (Map.Entry<?, ?> entry : map.entrySet()) {
             if (!first) json.append(",");
-            first = false;
-            
             json.append("\"").append(escapeJson(entry.getKey().toString())).append("\":");
-            
-            Object value = entry.getValue();
-            if (value == null) {
-                json.append("null");
-            } else if (value instanceof String) {
-                json.append("\"").append(escapeJson(value.toString())).append("\"");
-            } else if (value instanceof Number || value instanceof Boolean) {
-                json.append(value);
-            } else if (value instanceof List) {
-                json.append(convertListToJson((List<?>) value));
-            } else if (value instanceof Map) {
-                json.append(convertMapToJson((Map<?, ?>) value));
-            } else {
-                json.append(convertObjectToJson(value));
-            }
+            json.append(objectToJson(entry.getValue()));
+            first = false;
         }
         json.append("}");
         return json.toString();
     }
-    
-    private String convertObjectToJson(Object obj) {
+
+    private String collectionToJson(Collection<?> collection) {
+        StringBuilder json = new StringBuilder("[");
+        boolean first = true;
+        for (Object item : collection) {
+            if (!first) json.append(",");
+            json.append(objectToJson(item));
+            first = false;
+        }
+        json.append("]");
+        return json.toString();
+    }
+
+    private String arrayToJson(Object array) {
+        StringBuilder json = new StringBuilder("[");
+        int length = Array.getLength(array);
+        for (int i = 0; i < length; i++) {
+            if (i > 0) json.append(",");
+            json.append(objectToJson(Array.get(array, i)));
+        }
+        json.append("]");
+        return json.toString();
+    }
+
+    private String pojoToJson(Object obj) {
         StringBuilder json = new StringBuilder("{");
         boolean first = true;
         
         try {
-            // Récupérer tous les champs de la classe
-            Class<?> clazz = obj.getClass();
-            java.lang.reflect.Field[] fields = clazz.getDeclaredFields();
-            
-            for (java.lang.reflect.Field field : fields) {
+            for (java.lang.reflect.Field field : obj.getClass().getDeclaredFields()) {
                 field.setAccessible(true);
                 Object value = field.get(obj);
                 
                 if (!first) json.append(",");
-                first = false;
-                
                 json.append("\"").append(field.getName()).append("\":");
-                
-                if (value == null) {
-                    json.append("null");
-                } else if (value instanceof String) {
-                    json.append("\"").append(escapeJson(value.toString())).append("\"");
-                } else if (value instanceof Number || value instanceof Boolean) {
-                    json.append(value);
-                } else if (value instanceof List) {
-                    json.append(convertListToJson((List<?>) value));
-                } else if (value instanceof Map) {
-                    json.append(convertMapToJson((Map<?, ?>) value));
-                } else {
-                    json.append(convertObjectToJson(value));
-                }
+                json.append(objectToJson(value));
+                first = false;
             }
         } catch (Exception e) {
-            e.printStackTrace();
+            return "\"Error serializing object\"";
         }
         
         json.append("}");
         return json.toString();
     }
-    
+
     private String escapeJson(String str) {
         if (str == null) return "";
         return str.replace("\\", "\\\\")
@@ -181,5 +139,21 @@ public class JsonResponse {
                   .replace("\n", "\\n")
                   .replace("\r", "\\r")
                   .replace("\t", "\\t");
+    }
+
+    public boolean isSuccess() {
+        return success;
+    }
+
+    public Object getData() {
+        return data;
+    }
+
+    public String getError() {
+        return error;
+    }
+
+    public int getErrorCode() {
+        return errorCode;
     }
 }
