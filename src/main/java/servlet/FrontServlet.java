@@ -25,10 +25,27 @@ import servlet.annotations.Url;
 public class FrontServlet extends HttpServlet {
 
     private Map<String, Map<servlet.http.HttpMethod, MethodInvoker>> routes = new HashMap<>();
+    
+    // Configuration pour l'authentification et les rôles
+    private String authSessionKey = "auth";  // clé par défaut
+    private String roleSessionKey = "role";  // clé par défaut
 
     // init est executé une seule fois au lancement de ce servlet
     @Override
     public void init() throws ServletException {
+        // Lire la configuration depuis web.xml
+        String configAuthKey = getInitParameter("authSessionKey");
+        String configRoleKey = getInitParameter("roleSessionKey");
+        
+        if (configAuthKey != null && !configAuthKey.isEmpty()) {
+            this.authSessionKey = configAuthKey;
+        }
+        
+        if (configRoleKey != null && !configRoleKey.isEmpty()) {
+            this.roleSessionKey = configRoleKey;
+        }
+        
+        System.out.println("🔐 Security config: authKey=" + authSessionKey + ", roleKey=" + roleSessionKey);
         try {
             // 1 Scanner les classes du package "controller"
             List<Class<?>> classes = getClasses("com.itu.gest_emp.controller");
@@ -105,6 +122,14 @@ public class FrontServlet extends HttpServlet {
 
         if (invoker != null) {
             try {
+                // ✅ VÉRIFICATION DE SÉCURITÉ AVANT D'INVOQUER LA MÉTHODE
+                String securityError = checkSecurity(invoker.method, req);
+                if (securityError != null) {
+                    resp.setStatus(HttpServletResponse.SC_FORBIDDEN);
+                    resp.getWriter().print(securityError);
+                    return;
+                }
+                
                 Object controller = invoker.controllerClass.getDeclaredConstructor().newInstance();
 
                 // --- Nouvelle partie : injection des paramètres ---
@@ -375,6 +400,109 @@ public class FrontServlet extends HttpServlet {
         }
 
         return classes;
+    }
+    
+    // ---- Vérification de sécurité ----
+    /**
+     * Vérifie si l'utilisateur est autorisé à accéder à la méthode.
+     * @param method La méthode du contrôleur à invoquer
+     * @param req La requête HTTP contenant la session
+     * @return null si autorisé, sinon un message d'erreur
+     */
+    private String checkSecurity(java.lang.reflect.Method method, HttpServletRequest req) {
+        HttpSession session = req.getSession(false);
+        
+        // Vérifier @Authorized
+        if (method.isAnnotationPresent(servlet.annotations.Authorized.class)) {
+            if (session == null) {
+                return "❌ 403 Forbidden - Authentication required (no session)";
+            }
+            
+            Object authObj = session.getAttribute(authSessionKey);
+            if (authObj == null) {
+                return "❌ 403 Forbidden - Authentication required (not authenticated)";
+            }
+            
+            // Vérifier si c'est un booléen false
+            if (authObj instanceof Boolean && !((Boolean) authObj)) {
+                return "❌ 403 Forbidden - Authentication required";
+            }
+        }
+        
+        // Vérifier @Role
+        if (method.isAnnotationPresent(servlet.annotations.Role.class)) {
+            if (session == null) {
+                return "❌ 403 Forbidden - Authentication required for role check";
+            }
+            
+            Object authObj = session.getAttribute(authSessionKey);
+            if (authObj == null || (authObj instanceof Boolean && !((Boolean) authObj))) {
+                return "❌ 403 Forbidden - Authentication required for role check";
+            }
+            
+            servlet.annotations.Role roleAnnotation = method.getAnnotation(servlet.annotations.Role.class);
+            String[] requiredRoles = roleAnnotation.value();
+            
+            Object roleObj = session.getAttribute(roleSessionKey);
+            
+            // Si roleObj implémente UserSession
+            if (roleObj instanceof UserSession) {
+                UserSession userSession = (UserSession) roleObj;
+                boolean hasRole = false;
+                
+                for (String requiredRole : requiredRoles) {
+                    if (userSession.hasRole(requiredRole)) {
+                        hasRole = true;
+                        break;
+                    }
+                }
+                
+                if (!hasRole) {
+                    return "❌ 403 Forbidden - Required role: " + String.join(" or ", requiredRoles);
+                }
+            } 
+            // Si roleObj est une String (un seul rôle)
+            else if (roleObj instanceof String) {
+                String userRole = (String) roleObj;
+                boolean hasRole = false;
+                
+                for (String requiredRole : requiredRoles) {
+                    if (requiredRole.equals(userRole)) {
+                        hasRole = true;
+                        break;
+                    }
+                }
+                
+                if (!hasRole) {
+                    return "❌ 403 Forbidden - Required role: " + String.join(" or ", requiredRoles) + 
+                           " (your role: " + userRole + ")";
+                }
+            } 
+            // Si roleObj est un tableau de String
+            else if (roleObj instanceof String[]) {
+                String[] userRoles = (String[]) roleObj;
+                boolean hasRole = false;
+                
+                for (String requiredRole : requiredRoles) {
+                    for (String userRole : userRoles) {
+                        if (requiredRole.equals(userRole)) {
+                            hasRole = true;
+                            break;
+                        }
+                    }
+                    if (hasRole) break;
+                }
+                
+                if (!hasRole) {
+                    return "❌ 403 Forbidden - Required role: " + String.join(" or ", requiredRoles);
+                }
+            } 
+            else {
+                return "❌ 403 Forbidden - No role information in session";
+            }
+        }
+        
+        return null; // Autorisé
     }
 
 }
