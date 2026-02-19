@@ -64,6 +64,17 @@ public class FrontServlet extends HttpServlet {
             throws ServletException, IOException {
 
         String path = req.getRequestURI().substring(req.getContextPath().length());
+        
+        // Laisser passer les fichiers statiques (HTML, CSS, JS, images, etc.)
+        if (isStaticResource(path)) {
+            RequestDispatcher defaultServlet = req.getServletContext()
+                .getNamedDispatcher("default");
+            if (defaultServlet != null) {
+                defaultServlet.forward(req, resp);
+                return;
+            }
+        }
+        
         String httpMethodStr = req.getMethod(); // GET, POST
         servlet.http.HttpMethod httpMethod = servlet.http.HttpMethod.valueOf(httpMethodStr);
 
@@ -143,9 +154,28 @@ public class FrontServlet extends HttpServlet {
                 // --- Appel de la méthode avec injection ---
                 Object result = method.invoke(controller, args);
 
-                // --- Gestion retour (ton code existant) ---
-                if (result instanceof String) {
+                // --- Gestion retour avec support JSON ---
+                // Vérifier si la méthode est annotée avec @Json
+                if (method.isAnnotationPresent(servlet.annotations.Json.class)) {
+                    // Mode JSON API
+                    resp.setContentType("application/json");
+                    resp.setCharacterEncoding("UTF-8");
+                    
+                    JsonResponse jsonResponse;
+                    if (result instanceof JsonResponse) {
+                        // Si la méthode retourne déjà un JsonResponse, l'utiliser tel quel
+                        jsonResponse = (JsonResponse) result;
+                    } else {
+                        // Sinon, envelopper le résultat dans un JsonResponse success
+                        jsonResponse = JsonResponse.success(result);
+                    }
+                    
+                    resp.getWriter().print(jsonResponse.toJson());
+                    System.out.println(invoker.method.getName() + " -> JSON : " + jsonResponse.toJson());
+                    
+                } else if (result instanceof String) {
                     System.out.println(invoker.method.getName() + " -> String : " + result);
+                    resp.getWriter().print(result);
                 } else if (result == null) {
                     System.out.println(invoker.method.getName() + " -> null");
                 } else if (result instanceof ModelView mv) {
@@ -156,8 +186,8 @@ public class FrontServlet extends HttpServlet {
                 } else {
                     System.out.println(
                             invoker.method.getName() + " -> NON-String : " + result.getClass().getSimpleName());
+                    resp.getWriter().print(result);
                 }
-                resp.getWriter().print(result);
 
             } catch (Exception e) {
                 e.printStackTrace(resp.getWriter());
@@ -165,6 +195,23 @@ public class FrontServlet extends HttpServlet {
         } else {
             resp.getWriter().print("404 - Aucun contrôleur trouvé pour " + path);
         }
+    }
+
+    // ---- Vérifier si c'est une ressource statique ----
+    private boolean isStaticResource(String path) {
+        String lowerPath = path.toLowerCase();
+        return lowerPath.endsWith(".html") || 
+               lowerPath.endsWith(".css") || 
+               lowerPath.endsWith(".js") || 
+               lowerPath.endsWith(".jpg") || 
+               lowerPath.endsWith(".jpeg") || 
+               lowerPath.endsWith(".png") || 
+               lowerPath.endsWith(".gif") || 
+               lowerPath.endsWith(".svg") || 
+               lowerPath.endsWith(".ico") ||
+               lowerPath.endsWith(".woff") ||
+               lowerPath.endsWith(".woff2") ||
+               lowerPath.endsWith(".ttf");
     }
 
     // ---- Classe utilitaire ----
