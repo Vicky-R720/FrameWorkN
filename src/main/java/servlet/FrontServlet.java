@@ -64,6 +64,17 @@ public class FrontServlet extends HttpServlet {
             throws ServletException, IOException {
 
         String path = req.getRequestURI().substring(req.getContextPath().length());
+        
+        // Laisser passer les fichiers statiques (HTML, CSS, JS, images, etc.)
+        if (isStaticResource(path)) {
+            RequestDispatcher defaultServlet = req.getServletContext()
+                .getNamedDispatcher("default");
+            if (defaultServlet != null) {
+                defaultServlet.forward(req, resp);
+                return;
+            }
+        }
+        
         String httpMethodStr = req.getMethod(); // GET, POST
         servlet.http.HttpMethod httpMethod = servlet.http.HttpMethod.valueOf(httpMethodStr);
 
@@ -98,52 +109,73 @@ public class FrontServlet extends HttpServlet {
                     java.lang.reflect.Parameter p = parameters[i];
                     Class<?> paramType = p.getType();
 
+                    // Cas des Map (déjà géré)
                     if (Map.class.isAssignableFrom(paramType)) {
-
                         Map<String, Object> map = new HashMap<>();
-
                         Enumeration<String> paramNames = req.getParameterNames();
                         while (paramNames.hasMoreElements()) {
                             String name = paramNames.nextElement();
                             String value = req.getParameter(name);
                             map.put(name, value);
                         }
-
                         args[i] = map;
                         continue;
                     }
 
-                    // 1️⃣ Récupérer le nom du paramètre depuis @RequestParam si présent
-                    String paramName;
+                    // Cas des types simples avec @RequestParam
                     if (p.isAnnotationPresent(servlet.annotations.RequestParam.class)) {
-                        paramName = p.getAnnotation(servlet.annotations.RequestParam.class).value();
-                    } else {
-                        paramName = p.getName(); // fallback (si javac -parameters)
+                        String paramName = p.getAnnotation(servlet.annotations.RequestParam.class).value();
+                        String valueStr = req.getParameter(paramName);
+                        
+                        if (valueStr == null && (paramType == int.class || paramType == Integer.class)) {
+                            args[i] = 0;
+                        } else if (valueStr == null) {
+                            args[i] = null;
+                        } else if (paramType == int.class || paramType == Integer.class) {
+                            args[i] = Integer.parseInt(valueStr);
+                        } else if (paramType == String.class) {
+                            args[i] = valueStr;
+                        } else {
+                            args[i] = null;
+                        }
+                        continue;
                     }
 
-                    // 2️⃣ Récupérer la valeur depuis req.getParameter
-                    String valueStr = req.getParameter(paramName);
-
-                    // 3️⃣ Conversion type
-                    if (valueStr == null && (paramType == int.class || paramType == Integer.class)) {
-                        args[i] = 0;
-                    } else if (valueStr == null) {
+                    // NOUVEAU : Cas des objets complexes (sans annotation @RequestParam)
+                    try {
+                        args[i] = ObjectBinder.bindObject(req, paramType);
+                    } catch (Exception e) {
+                        // En cas d'erreur, on met null
                         args[i] = null;
-                    } else if (paramType == int.class || paramType == Integer.class) {
-                        args[i] = Integer.parseInt(valueStr);
-                    } else if (paramType == String.class) {
-                        args[i] = valueStr;
-                    } else {
-                        args[i] = null;
+                        System.err.println("Erreur lors du binding pour " + paramType.getName() + ": " + e.getMessage());
                     }
                 }
 
                 // --- Appel de la méthode avec injection ---
                 Object result = method.invoke(controller, args);
 
-                // --- Gestion retour (ton code existant) ---
-                if (result instanceof String) {
+                // --- Gestion retour avec support JSON ---
+                // Vérifier si la méthode est annotée avec @Json
+                if (method.isAnnotationPresent(servlet.annotations.Json.class)) {
+                    // Mode JSON API
+                    resp.setContentType("application/json");
+                    resp.setCharacterEncoding("UTF-8");
+                    
+                    JsonResponse jsonResponse;
+                    if (result instanceof JsonResponse) {
+                        // Si la méthode retourne déjà un JsonResponse, l'utiliser tel quel
+                        jsonResponse = (JsonResponse) result;
+                    } else {
+                        // Sinon, envelopper le résultat dans un JsonResponse success
+                        jsonResponse = JsonResponse.success(result);
+                    }
+                    
+                    resp.getWriter().print(jsonResponse.toJson());
+                    System.out.println(invoker.method.getName() + " -> JSON : " + jsonResponse.toJson());
+                    
+                } else if (result instanceof String) {
                     System.out.println(invoker.method.getName() + " -> String : " + result);
+                    resp.getWriter().print(result);
                 } else if (result == null) {
                     System.out.println(invoker.method.getName() + " -> null");
                 } else if (result instanceof ModelView mv) {
@@ -154,8 +186,8 @@ public class FrontServlet extends HttpServlet {
                 } else {
                     System.out.println(
                             invoker.method.getName() + " -> NON-String : " + result.getClass().getSimpleName());
+                    resp.getWriter().print(result);
                 }
-                resp.getWriter().print(result);
 
             } catch (Exception e) {
                 e.printStackTrace(resp.getWriter());
@@ -163,6 +195,23 @@ public class FrontServlet extends HttpServlet {
         } else {
             resp.getWriter().print("404 - Aucun contrôleur trouvé pour " + path);
         }
+    }
+
+    // ---- Vérifier si c'est une ressource statique ----
+    private boolean isStaticResource(String path) {
+        String lowerPath = path.toLowerCase();
+        return lowerPath.endsWith(".html") || 
+               lowerPath.endsWith(".css") || 
+               lowerPath.endsWith(".js") || 
+               lowerPath.endsWith(".jpg") || 
+               lowerPath.endsWith(".jpeg") || 
+               lowerPath.endsWith(".png") || 
+               lowerPath.endsWith(".gif") || 
+               lowerPath.endsWith(".svg") || 
+               lowerPath.endsWith(".ico") ||
+               lowerPath.endsWith(".woff") ||
+               lowerPath.endsWith(".woff2") ||
+               lowerPath.endsWith(".ttf");
     }
 
     // ---- Classe utilitaire ----
